@@ -1,0 +1,21 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: mongo-ipssi
+    ports: ["27017:27017"]
+    volumes: ["mongo-data:/data/db"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ipssi2025
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-express-ipssi
+    ports: ["8081:8081"]
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://admin:ipssi2025@mongo:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on: [mongo]
+
+volumes:
+  mongo-data:
