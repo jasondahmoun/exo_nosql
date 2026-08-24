@@ -4,7 +4,7 @@ IPSSI · Mastère Dév, Data & IA — Module MIA4 · Conception et intégration 
 
 TP Jour 1 — NYC DOHMH : 25 359 restaurants new-yorkais et leurs inspections d'hygiène.
 
-État : **Parties 0 et 1**.
+État : **Parties 0 à 2**.
 
 ## Lancer
 
@@ -33,3 +33,7 @@ Interface graphique : http://localhost:8081
 | Manhattan + Italian (Q5) | 621 |
 | `/BBQ/` vs `/BBQ/i` (Q9) | 0 vs 73 |
 | `restaurant_id` 30075445 (Q11) | Morris Park Bake Shop |
+| Au moins un score > 50 (Q12) | 349 |
+| Grade C historique vs actuel (Q13) | 2 708 vs 220 |
+| Naïf vs `$elemMatch` (Q17) | 4 908 vs 4 280 |
+| Score max du jeu (Q19) | 131 — Murals On 54/Randolphs'S |
