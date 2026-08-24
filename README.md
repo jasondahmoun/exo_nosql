@@ -4,7 +4,7 @@ IPSSI · Mastère Dév, Data & IA — Module MIA4 · Conception et intégration 
 
 TP Jour 1 — NYC DOHMH : 25 359 restaurants new-yorkais et leurs inspections d'hygiène.
 
-État : **Parties 0 à 3**.
+État : **Parties 0 à 4**.
 
 À partir de la Partie 3 la base est modifiée : les comptages divergent de la Partie 1. Pour repartir d'un état propre, relancer le `mongoimport --drop` ci-dessous.
 
@@ -42,3 +42,6 @@ Interface graphique : http://localhost:8081
 | Après `insertOne` (Q20) | 25 360 |
 | `risque: "eleve"` (Q22) | 349 |
 | `label_qualite` sur les French (Q23) | 345 |
+| `borough: "Missing"` supprimés (Q25) | 51 |
+| Total après suppression (Q25) | 25 309 |
+| `grades` vides conservés (Q26) | 737 — 2,91 % |

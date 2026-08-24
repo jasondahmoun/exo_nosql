@@ -143,3 +143,18 @@ db.restaurants.updateMany({ "grades.score": { $gt: 50 } }, { $set: { risque: "el
 db.restaurants.updateMany({ cuisine: "French" }, { $set: { label_qualite: true } })
 ```
 `matchedCount: 345` · `modifiedCount: 345` — **345 et non 344** : le restaurant de la Q20 est aussi French.
+
+## Partie 4
+
+**Q24** `db.restaurants.countDocuments({ borough: "Missing" })` → **51**
+
+**Q25** `db.restaurants.deleteMany({ borough: "Missing" })` → `deletedCount: 51`, reste **25309**
+
+**Q26a** `db.restaurants.countDocuments({ grades: { $size: 0 } })` → **737 / 25309 = 2,91 %**
+(737 et non 738 : un des 51 documents supprimés avait aussi un tableau vide)
+
+**Q26b — traitement asymétrique.** Un `borough: "Missing"` est une information **perdue et
+irrécupérable** : le document est incomplet sur une dimension d'analyse, il fausserait chaque
+ventilation. Un `grades: []` est une **donnée vraie** : « pas encore noté ». Le document reste
+exploitable, et ces 2,91 % sont même un indicateur utile — le stock d'établissements en attente
+d'inspection. On supprime ce qui est faux et irréparable, on garde ce qui est vide mais vrai.
