@@ -112,3 +112,34 @@ les vues unitaires, correction à l'ingestion au prochain cycle.
 db.restaurants.find({}, { name: 1, "grades.score": 1, _id: 0 }).sort({ "grades.score": -1 }).limit(1)
 ```
 **`Murals On 54/Randolphs'S`** — score **131**
+
+## Partie 3
+
+**Q20**
+```js
+db.restaurants.insertOne({
+  name: "JD Bistrot Data", borough: "Montpellier", cuisine: "French", restaurant_id: "99999001",
+  address: { building: "1", street: "Rue de l'IPSSI", zipcode: "34000", coord: [3.8767, 43.6108] },
+  grades: [{ grade: "A", score: 7, date: new Date() }]
+})
+```
+Total : **25360**
+
+**Q21**
+```js
+db.restaurants.updateOne({ restaurant_id: "30075445" },
+  { $push: { grades: { grade: "A", score: 3, date: new Date() } } })
+```
+Notes : **5 → 6**
+
+**Q22**
+```js
+db.restaurants.updateMany({ "grades.score": { $gt: 50 } }, { $set: { risque: "eleve" } })
+```
+`matchedCount: 349` · `modifiedCount: 349`
+
+**Q23**
+```js
+db.restaurants.updateMany({ cuisine: "French" }, { $set: { label_qualite: true } })
+```
+`matchedCount: 345` · `modifiedCount: 345` — **345 et non 344** : le restaurant de la Q20 est aussi French.
