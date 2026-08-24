@@ -158,3 +158,118 @@ irrécupérable** : le document est incomplet sur une dimension d'analyse, il fa
 ventilation. Un `grades: []` est une **donnée vraie** : « pas encore noté ». Le document reste
 exploitable, et ces 2,91 % sont même un indicateur utile — le stock d'établissements en attente
 d'inspection. On supprime ce qui est faux et irréparable, on garde ce qui est vide mais vrai.
+
+## Partie 5
+
+**Q27** — voir `rapport.js`
+```bash
+docker exec -i mongo-ipssi mongosh -u admin -p ipssi2025 --authenticationDatabase admin --quiet nyc < rapport.js
+```
+```
+1. TOTAL RESTAURANTS : 25309
+
+2. TOP 5 CUISINES
+   1. American : 6173
+   2. Chinese : 2412
+   3. Café/Coffee/Tea : 1210
+   4. Pizza : 1162
+   5. Italian : 1069
+
+3. PAR ARRONDISSEMENT
+   Bronx : 2338
+   Brooklyn : 6086
+   Manhattan : 10259
+   Montpellier : 1
+   Queens : 5656
+   Staten Island : 969
+```
+
+**Écart avec la Q1 : 25309 − 25359 = −50**
+
+| Étape | Δ | Total |
+|---|---|---|
+| Q1 import | — | 25359 |
+| Q20 `insertOne` | **+1** | 25360 |
+| Q21/Q22/Q23 `update` | 0 | 25360 |
+| Q25 `deleteMany` | **−51** | **25309** |
+
+Les trois `update` touchent 1 + 349 + 345 documents mais n'en créent ni n'en suppriment aucun.
+
+**La valeur nouvelle : `Montpellier`**, créée par le `insertOne` de la Q20 ; `Missing` a disparu
+(Q25). Aucune contrainte n'a empêché d'écrire une ville française dans un champ censé contenir un
+arrondissement de New York : c'est le schéma flexible. En SQL une clé étrangère l'aurait refusé ;
+en MongoDB il faut poser un JSON Schema validator avec un `enum` sur `borough`.
+
+**Q28**
+```bash
+docker exec mongo-ipssi mongoexport -u admin -p ipssi2025 --authenticationDatabase admin \
+  --db nyc --collection restaurants --query '{"borough":"Staten Island"}' --out /tmp/staten_island.json
+```
+**969 lignes** → `staten_island.json`
+
+## Partie 6
+
+### R1 — Les 5 V
+
+**Volume.** 25 359 documents (Q1) et 93 463 notes imbriquées. Sans index, chercher
+`cuisine: "French"` examine **25 309 documents pour en retourner 345** (B1) — ratio 73:1. C'est ce
+ratio, pas le volume absolu, qui impose l'architecture.
+
+**Variété.** **85 valeurs de `cuisine`** (Q2) dans une taxonomie non normalisée. Surtout, `grades`
+est un tableau de longueur variable : **738 documents à zéro note** (Q14), **3 864 à six ou plus**
+(Q15). Un schéma tabulaire devrait prévoir N colonnes vides ou éclater en table fille.
+
+**Véracité.** **51 documents** `borough: "Missing"` (Q24), **738** avec un historique vide (Q14),
+**13** avec un score de `-1` (Q18a) — impossible pour un barème dont le plancher est 0. Cet écart
+déplace la moyenne de **11,434842 à 11,436572, soit +0,0151 %** (Q18b) : l'impact est chiffré, donc
+arbitrable — il permet de *ne pas* déclencher un chantier de nettoyage.
+
+**Valeur.** 25 359 lignes brutes deviennent **349 établissements `risque: "eleve"`** (Q22), une
+liste d'inspection actionnable. Et la Q13 montre que la valeur dépend de la formulation : **2708**
+ont déjà été notés C, **220** le sont actuellement — facteur 12 sur la même donnée.
+
+### R2 — CAP & BASE
+
+Scénario : **Morris Park Bake Shop** (Q11, `restaurant_id: "30075445"`) vient d'être fermé pour
+insalubrité. L'écriture atteint le primaire, puis le lien réseau avec le secondaire qui sert
+l'application publique tombe. La partition arrive, elle ne se choisit pas — reste C ou A.
+
+**(a) Avec C** — le secondaire sait qu'il peut être en retard et **refuse de répondre**. L'usager
+voit une erreur. Il n'apprend pas que le commerce est fermé, mais il n'apprend rien du tout, et
+l'absence de réponse est un signal honnête.
+
+**(b) Avec A** — la page s'affiche, rapide et complète : **« Morris Park Bake Shop — Grade A »**.
+L'usager lit une information fausse présentée comme vraie, décide d'y aller, et le service publie
+une caution sanitaire sur un établissement qu'il vient lui-même de fermer.
+
+**Je choisis C.** Les deux erreurs ne sont pas symétriques : une page indisponible est un
+désagrément, une page affichant « Grade A » sur un local fermé pour insalubrité est un risque
+sanitaire et juridique.
+
+**Le dommage accepté** : pendant toute la partition, les **25 309 fiches** sont indisponibles, pas
+seulement celle qui a changé. J'échange de la disponibilité de masse contre la garantie de ne jamais
+publier une caution périmée.
+
+### R3 — Embarqué vs référencé
+
+**(a)** `bsonsize(db.restaurants.findOne({ restaurant_id: "30075445" }))` = **478 o** pour 5 notes.
+Le même document sans `grades` = **252 o**. Donc 226 o pour 5 notes → **≈ 45 o par note**.
+Les 3 864 restaurants à 6 notes ou plus (Q15) portent déjà ≥ 270 o de `grades`, soit plus que le
+reste du document. Après le `$push` de la Q21, le document 30075445 a **6 notes** (~523 o).
+
+**(b)** 520 notes × 45 o + 252 o = **≈ 23 Kio**. Limite BSON : **16 Mo**. Marge : **0,14 %**.
+**Le modèle embarqué tient largement** — le plafond ne serait atteint qu'à ~371 000 notes, soit une
+inspection par semaine pendant 7 100 ans.
+
+**(c)** Mais le plafond BSON est le mauvais indicateur. Trois limites mordent avant : lire le nom
+d'un restaurant charge ses 520 notes ; un `$push` fait réécrire le document entier et ses index,
+soit 23 Kio d'I/O pour 45 o d'information ; toutes les inspections d'un établissement écrivent sur
+le même verrou.
+
+**Avantage** : une seule lecture, aucune jointure — la fiche complète arrive en une opération. C'est
+le motif d'accès dominant ici, donc le choix est bon.
+**Limite** : le document ne peut que grossir et son coût croît avec un historique qu'on ne lit
+presque jamais en entier.
+**Bascule vers un modèle référencé** à partir de ~2 000 notes (~90 Kio), ou plus tôt si le tableau
+devient non borné dans le temps, ou si on veut requêter les notes indépendamment des restaurants
+(« toutes les inspections de mars 2015 »), ce qui imposerait un `$unwind` sur toute la collection.

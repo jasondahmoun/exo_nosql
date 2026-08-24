@@ -4,7 +4,7 @@ IPSSI · Mastère Dév, Data & IA — Module MIA4 · Conception et intégration 
 
 TP Jour 1 — NYC DOHMH : 25 359 restaurants new-yorkais et leurs inspections d'hygiène.
 
-État : **Parties 0 à 4**.
+État : **Parties 0 à 6**.
 
 À partir de la Partie 3 la base est modifiée : les comptages divergent de la Partie 1. Pour repartir d'un état propre, relancer le `mongoimport --drop` ci-dessous.
 
@@ -23,9 +23,19 @@ docker exec -it mongo-ipssi mongosh -u admin -p ipssi2025 --authenticationDataba
 
 Interface graphique : http://localhost:8081
 
-## Réponses
+## Livrables
 
-`tp_jour1_nyc/reponses_jour1.md`
+| Fichier | |
+|---|---|
+| `tp_jour1_nyc/reponses_jour1.md` | Q1→Q28 + R1→R3 |
+| `tp_jour1_nyc/rapport.js` | script de la Partie 5 |
+| `tp_jour1_nyc/staten_island.json` | Q28 — 969 documents |
+
+Rapport de la Partie 5 :
+
+```bash
+docker exec -i mongo-ipssi mongosh -u admin -p ipssi2025 --authenticationDatabase admin --quiet nyc < tp_jour1_nyc/rapport.js
+```
 
 | | |
 |---|---|
@@ -45,3 +55,5 @@ Interface graphique : http://localhost:8081
 | `borough: "Missing"` supprimés (Q25) | 51 |
 | Total après suppression (Q25) | 25 309 |
 | `grades` vides conservés (Q26) | 737 — 2,91 % |
+| Total final (Q27) | 25 309 — écart −50 vs Q1 |
+| Export Staten Island (Q28) | 969 |
