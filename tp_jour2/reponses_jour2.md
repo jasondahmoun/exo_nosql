@@ -409,3 +409,81 @@ toujours dans le même sens : sur-estimation. Ce n'est pas un accident isolé �
 Ici aussi il y a un ex æquo : **4 films ont exactement 158 commentaires**. La composition du top 5
 est donc stable (un film à 161, quatre à 158, les suivants à 157), mais **l'ordre interne des quatre
 ne l'est pas** sans critère de départage — d'où le `$sort: { commentaires: -1, titre: 1 }` final.
+
+## Partie 4 — `patterns.py`
+
+```python
+client = MongoClient("mongodb://admin:ipssi2025@localhost:27017/?authSource=admin")
+db = client["mflix"]
+```
+
+### Q16 — réconciliation du Computed Pattern
+
+Un seul `aggregate` sur `comments` chargé dans un `dict` Python, puis comparaison — pas de boucle de
+23 539 `count_documents` :
+
+```python
+reels = { d["_id"]: d["n"] for d in db.comments.aggregate(
+    [{"$group": {"_id": "$movie_id", "n": {"$sum": 1}}}]) }
+```
+
+| | |
+|---|---|
+| Films portant `num_mflix_comments` | 15740 |
+| **Compteurs incohérents** | **12244** |
+| Part des compteurs faux | **77,79 %** |
+| Films sans le champ mais commentés | 0 |
+
+**12 244 compteurs sur 15 740 sont faux, soit plus de trois sur quatre.** Le Pelham de la Q4 n'était
+pas un cas isolé : c'est l'état normal du champ. Les 7 799 films sans le champ n'ont, eux, aucun
+commentaire — leur absence est cohérente.
+
+### Q17 — correction par `bulk_write`
+
+```python
+ops = [UpdateOne({"_id": f["_id"]}, {"$set": {"num_mflix_comments": reel}}) ...]
+db.movies.bulk_write(ops)
+```
+
+| | |
+|---|---|
+| `matchedCount` | 20043 |
+| **`modifiedCount`** | **20043** |
+| Re-vérification Q16 | **0 incohérence** sur 23539 films |
+
+20 043 = les 12 244 compteurs faux **+** les 7 799 films auxquels le champ manquait et qui reçoivent
+désormais un `0` explicite. Le champ est maintenant présent et juste sur les 23 539 films.
+
+### Q18 — Subset Pattern
+
+Pour les 10 films les plus commentés, on embarque les 3 commentaires les plus récents, réduits à
+`{ name, text, date }` :
+
+```python
+recents = list(db.comments.find({"movie_id": mid}, {"_id": 0, "name": 1, "text": 1, "date": 1})
+                          .sort("date", -1).limit(3))
+db.movies.bulk_write([UpdateOne({"_id": mid}, {"$set": {"recent_comments": recents}})])
+```
+
+Vérification sur *The Taking of Pelham 1 2 3* (161 commentaires) :
+
+| | |
+|---|---|
+| `recent_comments` | **3 sous-documents** |
+| Clés conservées | `date`, `name`, `text` |
+| Plus récent | 2017-06-28 — Robert Baratheon |
+| Films porteurs | 10 |
+
+**Pourquoi 3 et pas 161 ?** Parce que la page film n'en affiche que quelques-uns. Le Subset Pattern
+embarque **ce que sert la vue principale**, pas la totalité de la relation :
+
+- **Ce qu'on gagne** — la page s'affiche avec **une seule lecture**, sans requête vers `comments` ni
+  `$lookup`. Le document reste petit : 3 × 284 o ≈ 852 octets contre ~45,7 Ko pour les 161.
+- **Ce qu'on éviterait de perdre** — embarquer 161 commentaires ferait payer leur poids à *toute*
+  lecture du film, y compris une liste de résultats qui n'affiche que le titre et l'affiche.
+- **Le tableau reste borné.** 3 est une constante ; 161 est une valeur qui grandit sans limite. Un
+  tableau non borné dans un document est le défaut de conception que le pattern sert justement à
+  éviter.
+
+`comments` reste la source de vérité : `recent_comments` est un cache d'affichage, et il hérite du
+même risque de dérive que `num_mflix_comments` (cf. R4).

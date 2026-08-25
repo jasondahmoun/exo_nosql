@@ -3,3 +3,4 @@ firebase-debug.log
 .DS_Store
 tp_jour2/movies.json
 tp_jour2/comments.json
+tp_jour2/.venv/
