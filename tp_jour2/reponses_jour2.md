@@ -550,3 +550,283 @@ Le commentaire visé est toujours présent après l'abort (`countDocuments({_id:
 C'est aussi la raison de la Partie 5 : les transactions **exigent un replica set**, car elles
 s'appuient sur l'oplog et les snapshots. Sur le nœud standalone du Jour 1, `startTransaction()`
 échoue.
+
+## Partie 6 — Réflexion
+
+### R1 — Ce que le SGBD ne fait plus pour vous
+
+**La responsabilité qui bascule : l'intégrité référentielle.** En relationnel, une clé étrangère
+`comments.movie_id → movies._id` fait **rejeter** par le moteur toute insertion pointant vers un
+film inexistant, et impose au moment du `DELETE` un `CASCADE` ou un `RESTRICT`. MongoDB n'a pas de
+clé étrangère : `movie_id` est un champ comme un autre, dont la sémantique de référence n'existe que
+dans la tête du développeur. Le contrôle passe intégralement **du moteur vers l'application**.
+
+**Le chiffre.** Q2 : **9224 commentaires orphelins** sur **50304** (Q1), soit **18,34 % de la
+collection qui pointe dans le vide**. Près d'un commentaire sur cinq référence un film absent. Et
+Q3 le confirme côté identifiants : sur 14 245 `movie_id` distincts, **6796 ne correspondent à aucun
+film** — seuls 7 449 sont de vraies références. Aucune de ces 9 224 insertions n'a été refusée :
+la base les a toutes acceptées sans un avertissement.
+
+**Deux stratégies applicatives, et leur facture :**
+
+**1. Validation à l'écriture** — vérifier l'existence du film avant d'insérer le commentaire, ou
+déclarer un [JSON Schema validator](https://www.mongodb.com/docs/manual/core/schema-validation/) sur
+la collection.
+
+*Ce que ça coûte :* un **aller-retour supplémentaire à chaque écriture** (lecture de `movies` avant
+insertion dans `comments`), donc de la latence sur le chemin le plus chaud. Surtout, la couverture
+est **partielle et illusoire** : la vérification et l'insertion ne sont pas atomiques sans
+transaction — le film peut être supprimé entre les deux. Et un validator `$jsonSchema` sait
+contrôler un **type** (`movie_id` est bien un ObjectId), pas une **existence** : il ne peut pas
+interroger une autre collection. Il n'aurait bloqué aucun de nos 9 224 orphelins.
+
+**2. Suppression en cascade applicative, dans une transaction** — supprimer un film et ses
+commentaires dans une même transaction ACID, comme en Partie 5.
+
+*Ce que ça coûte :* de la **complexité** et de la **performance**. Il faut un replica set (contrainte
+d'infrastructure), les transactions multi-documents sont nettement plus lourdes que des écritures
+simples, et surtout la discipline doit être **absolue** : il suffit d'**un seul** chemin de code qui
+supprime un film sans passer par la fonction transactionnelle — un script de purge, un import, une
+correction manuelle en console — pour recréer des orphelins. La garantie ne vaut que si 100 % des
+appelants la respectent, alors que la clé étrangère relationnelle, elle, ne pouvait pas être
+contournée.
+
+**Le vrai enseignement :** ces deux stratégies préviennent, aucune ne répare. D'où la nécessité d'une
+troisième ligne — un **job de réconciliation périodique**, comme celui de la Q16 — qui détecte et
+corrige la dérive après coup. On remplace une garantie du moteur par un processus applicatif à
+maintenir.
+
+### R2 — Embed vs reference : la borne
+
+**Le film le plus commenté en porte 161** (Q15, *The Taking of Pelham 1 2 3*).
+
+**Estimation du poids**, méthode du Jour 1 (R3) — `db.comments.stats().avgObjSize` = **284 octets**
+par commentaire, `db.movies.stats().avgObjSize` = **1606 octets** par film.
+
+| | Calcul | Taille |
+|---|---|---|
+| 161 commentaires imbriqués | 161 × 284 o | **45 724 o ≈ 44,7 Ko** |
+| Film + ses 161 commentaires | 1 606 + 45 724 | **47 330 o ≈ 46,2 Ko** |
+| Part de la limite BSON de 16 Mo | | **0,282 %** |
+| Commentaires nécessaires pour saturer 16 Mo | (16 777 216 − 1 606) / 284 | **59 069** |
+
+**Ce n'est donc PAS la limite des 16 Mo qui tranche.** Le pire cas du jeu occupe moins de 0,3 % du
+plafond ; il faudrait **59 069 commentaires sur un seul film** — 367 fois le maximum observé — pour
+l'atteindre. Sur ce jeu de données, l'argument des 16 Mo ne mord pas.
+
+**Ce qui tranche vraiment, ce sont trois autres choses :**
+
+1. **Le tableau n'est pas borné.** 161 est un maximum *observé*, pas une limite *structurelle*. Rien
+   n'empêche un film viral d'en accumuler 50 000. Un modèle qui fonctionne aujourd'hui et casse à
+   une valeur qu'on ne contrôle pas est un modèle qui casse — la question est quand, pas si.
+
+2. **Les écritures sont fréquentes et concurrentes.** C'est le critère du cours : *reference quand
+   les écritures sont fréquentes*. Chaque nouveau commentaire réécrirait le document film. À 161
+   commentaires, chaque ajout fait réécrire ~46 Ko pour ajouter 284 octets, avec contention sur le
+   document et croissance qui force MongoDB à le relocaliser.
+
+3. **La règle d'or joue contre l'imbrication ici.** *« Data that is accessed together should be
+   stored together »* — or les commentaires **ne sont pas lus avec le film** dans la plupart des
+   accès. Une liste de résultats, une affiche, une recherche par genre n'affichent que titre, année
+   et note. Imbriquer ferait payer 46 Ko à chaque lecture qui n'a besoin que de 1,6 Ko : les
+   commentaires sont une **section secondaire**, chargée sur demande. C'est du 1:beaucoup entre deux
+   entités indépendantes — un commentaire a sa propre vie (modération, signalement, profil
+   utilisateur). **Référencer est le bon choix.**
+
+**Dans quel cas imbriquerait-on quand même ?** Quand les trois critères s'inversent : relation
+**1:peu et bornée par construction**, lue **systématiquement avec le parent**, et **peu réécrite**.
+Concrètement ici : le **Subset Pattern de la Q18** — les 3 commentaires les plus récents sont
+imbriqués (852 octets, borné par une constante du code, affiché sur la page film) pendant que les
+161 restent référencés. Ce n'est pas embed *ou* reference, c'est **les deux** : on imbrique la
+tranche que la vue principale consomme, on référence le reste.
+
+### R3 — ESR, vérifié par l'expérience
+
+**Pourquoi cet ordre, avec mes mots.** Un index composé est une liste **triée une seule fois**, selon
+les champs pris dans l'ordre déclaré — comme un annuaire trié par ville, puis nom, puis prénom. Tout
+découle de là :
+
+- L'**égalité** en premier parce qu'elle **découpe un bloc contigu** : « genres = Drama » désigne une
+  tranche continue de l'index, tout le reste est ignoré d'un coup. C'est le filtre le plus rentable
+  par position.
+- Le **tri** juste après, parce qu'à l'intérieur de ce bloc les clés sont **déjà dans l'ordre
+  voulu**. Le curseur les lit en séquence et le tri est gratuit — il ne reste rien à trier.
+- La **plage en dernier**, parce qu'une plage **éparpille** les clés au lieu de les regrouper. Placée
+  avant le champ de tri, elle rend l'ordre du tri inutilisable : les résultats sortent triés d'abord
+  par année, et l'ordre des notes est brisé à chaque changement d'année. MongoDB doit alors **tout
+  remonter en mémoire et retrier**.
+
+**La preuve.** Second index dans le mauvais ordre, forcé au `.hint()` :
+
+```js
+db.movies.createIndex({ genres: 1, year: 1, "imdb.rating": -1 }, { name: "esr_ko" })
+db.movies.find({ genres: "Drama", year: { $gte: 2000 } })
+         .sort({ "imdb.rating": -1 }).hint("esr_ko").explain("executionStats")
+```
+
+**(a)**
+
+| Index | Stage | totalKeysExamined | totalDocsExamined | ms |
+|---|---|---|---|---|
+| `esr_ok` `{ genres, imdb.rating, year }` | `FETCH ← IXSCAN` | **7834** | 7761 | **8** |
+| `esr_ko` `{ genres, year, imdb.rating }` | **`FETCH ← SORT ← IXSCAN`** | 7761 | 7761 | 21 |
+
+**Oui, un stage `SORT` apparaît** avec `esr_ko`, et il est absent avec `esr_ok`.
+
+**(b) L'écart.** Sur les volumes lus, il est presque nul : `esr_ko` examine même **73 clés de
+moins** (7 761 contre 7 834), et exactement autant de documents. Le résultat contre-intuitif mérite
+d'être dit : **le mauvais index lit légèrement moins**, parce qu'avec `year` en deuxième position la
+plage est appliquée dans l'index et aucune clé inutile n'est touchée ; `esr_ok` traverse au contraire
+73 clés qui échoueront sur le filtre `year`.
+
+**Ce n'est pourtant pas là que se joue le coût.** `esr_ko` est **2,6× plus lent** — 21 ms contre 8 ms
+— pour un nombre de documents identique. Le surcoût n'est **pas** dans les lectures, il est dans le
+**tri bloquant** : les 7 761 documents doivent être **intégralement matérialisés en mémoire** avant
+que la première ligne puisse sortir. `esr_ok` est donc le moins coûteux, de 13 ms sur cette requête,
+et l'écart réel est plus grave que ce chiffre :
+
+- Le `SORT` est **bloquant** : avec un `.limit(10)`, `esr_ok` s'arrête après 10 clés là où `esr_ko`
+  doit d'abord trier les 7 761. C'est là que le rapport explose.
+- La mémoire consommée croît avec le **nombre de résultats**, pas avec la taille du `limit`.
+
+**La leçon : `totalDocsExamined` seul ne suffit pas à juger un index.** Ici, les deux index lisent la
+même chose et l'un est 2,6× plus lent. Il faut regarder le **stage**.
+
+**(c) Si le tri en mémoire dépasse la limite.** L'énoncé mentionne 32 Mo — sur **MongoDB 7.0 la
+valeur par défaut est 100 Mo** (`internalQueryMaxBlockingSortMemoryUsageBytes` = **104857600**,
+relevé sur l'instance ; 32 Mo était la valeur des versions antérieures à la 4.4).
+
+Vérifié en abaissant volontairement le paramètre à 100 000 octets :
+
+| | Résultat |
+|---|---|
+| `aggregate` `$sort`, `allowDiskUse: false` | **`QueryExceededMemoryLimitNoDiskUseAllowed`** — *« Sort exceeded memory limit of 100000 bytes, but did not opt in to external sorting. »* |
+| `aggregate` `$sort`, `allowDiskUse: true` | **OK — 13 789 documents triés sur disque** |
+| `find().sort()` | **pas d'erreur** |
+
+La requête **échoue** — elle ne dégrade pas, elle ne ralentit pas : elle est **abandonnée**. En
+production cela se traduit par une erreur utilisateur, sur la requête qui a le plus de résultats,
+c'est-à-dire au pire moment.
+
+Deux issues : `{ allowDiskUse: true }`, qui autorise le déversement sur disque au prix d'un net
+ralentissement — ou **créer le bon index**, qui supprime le tri au lieu de lui trouver de la place.
+
+Nuance relevée à l'exécution : `find().sort()` **n'a pas levé d'erreur**, seul l'`aggregate` l'a
+fait. Depuis MongoDB 4.4, les tris de `find()` déversent sur disque **par défaut** ; c'est le
+pipeline d'agrégation qui exige un `allowDiskUse` explicite.
+
+### R4 — Le Computed Pattern : le bénéfice et sa facture
+
+**Le bénéfice, chiffré.** `num_mflix_comments` évite un recomptage à chaque affichage. Sans lui,
+afficher « N commentaires » impose un `countDocuments({ movie_id })` ou un `$lookup` — et Q3 donne
+l'ampleur : **7449 films sont réellement commentés**. Chaque page film de ces 7 449, chaque ligne de
+liste, chaque résultat de recherche déclencherait une agrégation sur une collection de 50 304
+commentaires. Sur une page de 20 films, c'est **20 agrégations pour afficher 20 nombres**. Le champ
+pré-calculé remplace tout cela par une lecture déjà présente dans le document : **coût zéro**, la
+donnée arrive avec le film. C'est un vrai gain, et il est la raison d'être du pattern.
+
+**Le risque, chiffré.** Q16 : **12244 compteurs faux sur 15740 films portant le champ, soit
+77,79 %**. **Plus de trois compteurs sur quatre mentent.** Et pas d'un peu — Q4 : 437 affichés contre
+161 réels, soit **2,71× le vrai chiffre**. Q15 montre que les 5 films les plus commentés sont *tous*
+faux, tous sur-estimés. Le pattern n'a pas légèrement dérivé : **il a cessé de décrire la réalité**,
+tout en continuant à être servi avec la même autorité qu'une donnée juste.
+
+**Le vrai danger n'est pas l'erreur, c'est le silence.** Rien ne signale la dérive. Pas d'exception,
+pas de log, pas d'incohérence visible à la lecture. Il a fallu **écrire une requête exprès** (Q16)
+pour la découvrir — le job de réconciliation de la Q17, qui a corrigé 20 043 documents. Un compteur
+faux se comporte exactement comme un compteur juste.
+
+**À quelle condition ce pattern est-il acceptable en production ?** Trois, cumulatives :
+
+1. **Toute écriture de la source met à jour le compteur dans la même transaction.** C'est exactement
+   la Partie 5 : supprimer un commentaire **et** décrémenter le compteur atomiquement. Le `$inc`
+   hors transaction est la faille par laquelle les 12 244 incohérences sont entrées.
+
+2. **Un job de réconciliation périodique tourne et alerte.** La Q17 l'a fait une fois
+   (`modifiedCount` = 20 043) ; en production il tourne en continu. Corriger ne suffit pas : il faut
+   **mesurer le taux de dérive** — si 77,79 % des compteurs sont faux, le problème est en amont, et
+   un job qui corrige sans alerter ne fait que masquer un bug d'écriture.
+
+3. **La donnée tolère l'approximation.** Un compteur de commentaires peut afficher 158 au lieu de
+   161 sans conséquence. **Un solde bancaire, un stock, un décompte de places ne le peuvent pas.**
+   C'est le critère décisif : le Computed Pattern échange de la **fraîcheur** contre de la
+   **vitesse**, et cet échange n'est acceptable que si l'approximation est sans conséquence métier.
+
+**En un mot :** le Computed Pattern ne coûte rien à lire et tout à maintenir. Le bénéfice est
+immédiat et visible, la facture est différée et invisible — c'est précisément ce qui le rend
+dangereux. Il est acceptable là où l'à-peu-près l'est ; il ne l'est jamais par défaut, et jamais
+sans le job qui le surveille.
+
+## Pour aller plus loin
+
+### B1 — Covered query
+
+Première tentative sur l'index multi-clés `genres_1` :
+
+```js
+db.movies.find({ genres: "Film-Noir" }, { genres: 1, _id: 0 }).explain("executionStats")
+```
+→ `PROJECTION_SIMPLE ← FETCH ← IXSCAN`, `totalDocsExamined: 105` — **non couverte**.
+
+**Un index multi-clés ne peut jamais couvrir une requête** : ses entrées contiennent les valeurs du
+tableau une par une, jamais le tableau d'origine. MongoDB est obligé d'aller chercher le document
+pour reconstituer `genres`, d'où le `FETCH`.
+
+Sur un index simple, en revanche :
+
+```js
+db.movies.createIndex({ title: 1 }, { name: "titre_complet" })
+db.movies.find({ title: "The Godfather" }, { title: 1, _id: 0 }).hint("titre_complet").explain("executionStats")
+```
+
+| | |
+|---|---|
+| Stage | **`PROJECTION_COVERED ← IXSCAN`** |
+| `totalDocsExamined` | **0** |
+| `totalKeysExamined` | 1 |
+| `nReturned` | 1 |
+
+**Aucun `FETCH`, zéro document examiné.** Le résultat est entièrement lu dans l'index. Les deux
+conditions : tous les champs du filtre **et** de la projection sont dans l'index, et `_id` est
+explicitement exclu (il n'appartient pas à `titre_complet`).
+
+### B2 — Index partiel
+
+254 films de `type: "series"` sur 23 539.
+
+```js
+db.movies.createIndex({ title: 1 }, { name: "titre_complet" })
+db.movies.createIndex({ title: 1 }, { name: "titre_series",
+                                      partialFilterExpression: { type: "series" } })
+```
+
+| Index | Taille |
+|---|---|
+| `titre_complet` (23 539 films) | 483 328 o |
+| `titre_series` (254 films) | **24 576 o** |
+| **Gain** | **94,92 %** |
+
+L'index partiel occupe **1/20e** de la place pour servir les mêmes requêtes sur les séries
+(`FETCH ← IXSCAN`, 1 clé, 1 document). Le gain porte sur la RAM — moins d'espace occupé dans le
+cache — **et** sur les écritures : les 23 285 films non-séries ne provoquent aucune maintenance de
+cet index. Contrainte : il n'est utilisable que si la requête contient le filtre
+`type: "series"`, sans quoi le planificateur l'ignore.
+
+### B3 — Index TTL
+
+```js
+db.sessions.createIndex({ createdAt: 1 }, { expireAfterSeconds: 3600, name: "ttl_1h" })
+db.sessions.insertOne({ user: "jason", createdAt: new Date() })
+```
+`{ v: 2, key: { createdAt: 1 }, name: 'ttl_1h', expireAfterSeconds: 3600 }`
+
+MongoDB exécute une tâche de fond **toutes les 60 s** qui supprime les documents dont `createdAt`
+dépasse 3 600 s. L'expiration n'est donc pas à la seconde près : un document peut survivre jusqu'à
+une minute au-delà de son échéance.
+
+**Cas d'usage :** sessions utilisateur, tokens de réinitialisation de mot de passe, codes OTP,
+paniers abandonnés, caches de résultats, logs à rétention courte. Le point commun : une donnée dont
+la **péremption fait partie de la définition**. Le TTL déplace la purge du code applicatif — un cron
+à écrire, à déployer et à surveiller — vers une **propriété déclarative du schéma**. Bénéfice
+secondaire mais réel : la conformité RGPD, où une durée de conservation devient une ligne de
+configuration vérifiable plutôt qu'une promesse dans une documentation.
