@@ -487,3 +487,66 @@ embarque **ce que sert la vue principale**, pas la totalité de la relation :
 
 `comments` reste la source de vérité : `recent_comments` est un cache d'affichage, et il hérite du
 même risque de dérive que `num_mflix_comments` (cf. R4).
+
+## Partie 5 — `transaction.js`
+
+```bash
+docker run -d --name mongo-rs -p 27018:27017 mongo:7.0 --replSet rs0
+docker exec mongo-rs mongosh --port 27017 --eval "rs.initiate()"
+```
+
+Les deux collections sont réimportées dans ce nœud (23 539 / 50 304), qui devient primaire.
+
+### Q19 — modération atomique
+
+```js
+const s = db.getMongo().startSession();
+s.startTransaction({ readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } });
+try {
+  const sdb = s.getDatabase("mflix");
+  sdb.comments.deleteOne({ _id: cible._id });
+  sdb.movies.updateOne({ _id: film._id }, { $inc: { num_mflix_comments: -1 } });
+  s.commitTransaction();
+} catch (e) {
+  s.abortTransaction();
+}
+```
+
+**Transaction 1 — commit** (film *The Taking of Pelham 1 2 3*) :
+
+| | `num_mflix_comments` | Commentaires réels |
+|---|---|---|
+| Avant | 437 | 161 |
+| Après commit | **436** | **160** |
+
+Les deux collections bougent ensemble.
+
+**Transaction 2 — abort**, avec lecture depuis l'intérieur et depuis l'extérieur de la session :
+
+| Point de vue | `num_mflix_comments` | Commentaires |
+|---|---|---|
+| Dans la session, avant commit | **435** | **159** |
+| Hors session, au même instant | **436** | **160** |
+| Après `abortTransaction()` | **436** | **160** |
+
+Le commentaire visé est toujours présent après l'abort (`countDocuments({_id: cible2._id})` = 1).
+**Rien n'a été appliqué.**
+
+### Ce que garantit chaque lettre, ici
+
+- **A — Atomicité.** Le `deleteOne` et le `$inc` forment **un seul geste**. Sans transaction, un
+  crash entre les deux laisserait un compteur décrémenté pour un commentaire toujours en base —
+  exactement le type de dérive mesuré en Q16. L'abort le prouve : deux écritures déjà exécutées ont
+  été annulées ensemble.
+- **C — Cohérence.** L'invariant métier « `num_mflix_comments` = nombre de commentaires » est vrai
+  avant et après. La base ne connaît pas cet invariant — c'est la transaction qui empêche
+  l'application de le briser.
+- **I — Isolation.** Mesuré directement : pendant la transaction, la session voit **435/159** et le
+  reste du monde **436/160**. Aucun autre client ne lit l'état intermédiaire. Le
+  `readConcern: "snapshot"` fige une vue cohérente pour toute la durée.
+- **D — Durabilité.** `writeConcern: { w: "majority" }` : le commit n'est acquitté qu'une fois
+  répliqué sur la majorité du replica set. Une panne du primaire juste après ne perd pas l'écriture.
+
+C'est aussi la raison de la Partie 5 : les transactions **exigent un replica set**, car elles
+s'appuient sur l'oplog et les snapshots. Sur le nœud standalone du Jour 1, `startTransaction()`
+échoue.
