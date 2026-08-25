@@ -288,3 +288,124 @@ lecture accélérée. Un index text est le pire cas : il indexe chaque mot de ch
 `title` + `plot`, cela fait plusieurs entrées par film. Il concurrence aussi les index utiles dans
 le cache : de la RAM occupée par des données que personne ne lit est de la RAM retirée à celles que
 tout le monde lit.
+
+## Partie 3 — `analyses.js`
+
+### Q11 — top 5 des genres
+
+```js
+db.movies.aggregate([
+  { $unwind: "$genres" },
+  { $group: { _id: "$genres", films: { $sum: 1 } } },
+  { $sort: { films: -1 } },
+  { $limit: 5 }
+])
+```
+
+| Genre | Films |
+|---|---|
+| Drama | **13789** |
+| Comedy | 7024 |
+| Romance | 3665 |
+| Crime | 2678 |
+| Thriller | 2658 |
+
+Drama à lui seul couvre 58,6 % du catalogue. La somme dépasse 23 539 : un film porte plusieurs
+genres, `$unwind` le compte une fois par genre. (Aucun ex æquo ici, mais le `_id: 1` est ajouté au
+`$sort` par cohérence avec Q14 et Q15.)
+
+### Q12 — films par décennie
+
+```js
+db.movies.aggregate([
+  { $match: { year: { $type: "int" } } },
+  { $group: { _id: { $subtract: ["$year", { $mod: ["$year", 10] }] }, films: { $sum: 1 } } },
+  { $sort: { films: -1 } }
+])
+```
+
+Top 3 :
+
+| Décennie | Films |
+|---|---|
+| **2000** | **7749** |
+| 2010 | 5972 |
+| 1990 | 3773 |
+
+Le `$match { year: { $type: "int" } }` écarte les 37 chaînes de la Q5. Sans lui, le pipeline ne
+renvoie pas un résultat approximatif : il **échoue**.
+
+```
+Location16611 — $mod only supports numeric types, not string and int
+```
+
+Contraste instructif avec la Q5 : le même jeu de données mal typé provoque ici une **erreur bruyante**
+qui arrête tout, alors qu'un `find({ year: { $gte: 2000 } })` l'ignorait **silencieusement**. Le
+framework d'agrégation est strict sur les types là où le langage de requête est permissif — la panne
+franche est de loin la moins dangereuse des deux.
+
+### Q13 — note IMDB moyenne des Drama
+
+```js
+db.movies.aggregate([
+  { $match: { genres: "Drama", "imdb.rating": { $type: "number" } } },
+  { $group: { _id: null, moyenne: { $avg: "$imdb.rating" }, films: { $sum: 1 } } },
+  { $project: { _id: 0, films: 1, moyenne: { $round: ["$moyenne", 4] } } }
+])
+```
+
+Moyenne **6.8305** sur **13751** films.
+
+13 751 et non 13 789 (Q11) : le filtre de type écarte **38** Drama dont la note est la chaîne vide de
+la Q6. C'est précisément la correction que la Q6 réclamait.
+
+### Q14 — top 3 réalisateurs
+
+```js
+db.movies.aggregate([
+  { $unwind: "$directors" },
+  { $group: { _id: "$directors", films: { $sum: 1 } } },
+  { $sort: { films: -1, _id: 1 } },
+  { $limit: 3 }
+])
+```
+
+| Réalisateur | Films |
+|---|---|
+| **Woody Allen** | **40** |
+| John Ford | 35 |
+| John Huston | 34 |
+
+**Attention — la 3e place est un ex æquo.** `John Huston` et `Takashi Miike` ont **34 films chacun** ;
+`Werner Herzog` suit à 33. Un `$sort: { films: -1 }` seul départage donc **arbitrairement** : deux
+exécutions successives de la même requête ont renvoyé Huston puis Miike. D'où le second critère de
+tri `_id: 1` ajouté dans `analyses.js`, qui rend le résultat **reproductible**. Un « top N » sans
+critère de départage n'est pas un résultat stable.
+
+### Q15 — `$lookup` inversé, top 5 des films les plus commentés
+
+```js
+db.comments.aggregate([
+  { $group: { _id: "$movie_id", commentaires: { $sum: 1 } } },
+  { $sort: { commentaires: -1 } },
+  { $limit: 5 },
+  { $lookup: { from: "movies", localField: "_id", foreignField: "_id", as: "film" } },
+  { $unwind: "$film" },
+  { $project: { _id: 0, titre: "$film.title", commentaires: 1, compteur: "$film.num_mflix_comments" } }
+])
+```
+
+| Titre | Commentaires réels | `num_mflix_comments` | Écart |
+|---|---|---|---|
+| The Taking of Pelham 1 2 3 | **161** | 437 | +276 |
+| Terminator Salvation | 158 | 416 | +258 |
+| 50 First Dates | 158 | 403 | +245 |
+| Ocean's Eleven | 158 | 424 | +266 |
+| About a Boy | 158 | 441 | +283 |
+
+Le film le plus commenté du catalogue en porte **161**. Et le compteur est faux sur **les cinq**,
+toujours dans le même sens : sur-estimation. Ce n'est pas un accident isolé — cf. Q16.
+
+Ici aussi il y a un ex æquo : **4 films ont exactement 158 commentaires**. La composition du top 5
+est donc stable (un film à 161, quatre à 158, les suivants à 157), mais **l'ordre interne des quatre
+ne l'est pas** sans critère de départage — d'où le `$sort: { commentaires: -1, titre: 1 }` final.
