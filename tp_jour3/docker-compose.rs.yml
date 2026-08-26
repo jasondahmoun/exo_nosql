@@ -1,0 +1,28 @@
+name: rslab
+
+services:
+  mongo1:
+    image: mongo:7.0
+    container_name: mongo1
+    ports: ["27017:27017"]
+    volumes: ["mongo1-data:/data/db"]
+    command: mongod --replSet rs0 --bind_ip_all --port 27017 --oplogSize 128
+
+  mongo2:
+    image: mongo:7.0
+    container_name: mongo2
+    ports: ["27018:27017"]
+    volumes: ["mongo2-data:/data/db"]
+    command: mongod --replSet rs0 --bind_ip_all --port 27017 --oplogSize 128
+
+  mongo3:
+    image: mongo:7.0
+    container_name: mongo3
+    ports: ["27019:27017"]
+    volumes: ["mongo3-data:/data/db"]
+    command: mongod --replSet rs0 --bind_ip_all --port 27017 --oplogSize 128
+
+volumes:
+  mongo1-data:
+  mongo2-data:
+  mongo3-data:
