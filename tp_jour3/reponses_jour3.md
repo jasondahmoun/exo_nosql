@@ -556,3 +556,241 @@ partir sur le **primary**.
 
 La règle : lire sur un secondary est acceptable quand la donnée est **consultée**, dangereux quand
 elle est **utilisée pour décider**.
+
+## Partie 3
+
+Mesures complètes et horodatées dans **`failover.md`**. Outil : `watch_primary.py`, sondage 300 ms.
+
+### Q17 — panne propre
+
+```bash
+docker stop mongo1
+```
+
+```
+docker stop a 15:54:06.076
+[   0.01s] 15:54:03.182  primary = mongo1:27017
+[   3.08s] 15:54:06.257  primary = mongo2:27017
+```
+
+| | |
+|---|---|
+| Délai | **0,181 s** |
+| Nœud élu | **mongo2** |
+
+**La bascule est quasi instantanée** — deux ordres de grandeur sous l'`electionTimeoutMillis`.
+`docker stop` envoie **SIGTERM** : mongod l'intercepte, se **rétrograde volontairement** et prévient
+le set avant de mourir. Aucun timeout n'est attendu puisque personne n'a besoin de *deviner* que le
+primary est mort — il l'a annoncé.
+
+*Réserve :* avec un sondage à 300 ms, 0,181 s est un **majorant**, pas une mesure fine.
+
+### Q18 — état pendant la bascule
+
+Depuis mongo2, pendant que mongo1 est arrêté :
+
+| Membre | `stateStr` | `health` |
+|---|---|---|
+| mongo1:27017 | **`(not reachable/healthy)`** | **0** |
+| mongo2:27017 | PRIMARY | 1 |
+| mongo3:27017 | SECONDARY | 1 |
+
+`lastHeartbeatMessage` : `Error connecting to mongo1:27017 :: caused by :: Could not find address…`
+
+C'est la confirmation de la Q7 : **`health: 0`** est le signal d'injoignabilité, et `stateStr` bascule
+sur un libellé explicite plutôt que sur un état du protocole.
+
+### Q19 — retour du nœud et priority takeover
+
+```bash
+docker start mongo1
+```
+
+```
+docker start a 15:50:59.842
+[   0.01s] 15:50:57.921  primary = mongo2:27017
+[  13.48s] 15:51:11.396  primary = mongo1:27017
+```
+
+| | |
+|---|---|
+| État immédiat au retour | STARTUP2 puis SECONDARY |
+| **Redevient-il PRIMARY ?** | **Oui** |
+| Délai | **11,55 s** |
+
+mongo1 ne revient jamais directement PRIMARY : il rejoint d'abord en **SECONDARY**, rattrape son
+retard par l'oplog (Q20), et **seulement une fois à jour** déclenche une élection.
+
+**Le mécanisme : `rs.conf().members[0].priority = 2`** contre `1` pour les deux autres. Un membre de
+priorité supérieure qui est à jour force un *priority takeover* : il réclame le rôle même si le
+primary en place fonctionne parfaitement. mongo2 n'avait aucun problème — il a été destitué par la
+configuration.
+
+**Nombre de bascules depuis le `docker stop` : 2.**
+
+1. mongo1 → mongo2 (à l'arrêt)
+2. mongo2 → mongo1 (au retour, priority takeover)
+
+**Pourquoi c'est un argument contre les priorités asymétriques en production :** un seul incident,
+ou un simple redémarrage de maintenance, coûte **deux élections au lieu d'une**. Le service subit
+deux interruptions là où une seule était nécessaire, et la seconde est **entièrement gratuite** — elle
+ne répare rien, elle ne fait que satisfaire une préférence de configuration. Elle survient de surcroît
+au pire moment : juste après un incident, quand le cluster vient de se stabiliser.
+
+Sur ce set, cette seconde bascule coûte **11,55 s**, soit **plus que la panne brutale elle-même
+(9,04 s)**. En priorités égales, le nœud revenu resterait tranquillement SECONDARY et le service ne
+serait pas réinterrompu. Les priorités ne se justifient que pour une raison **topologique** — garder
+le primary dans un datacenter précis — jamais par habitude.
+
+### Q20 — récupération des écritures manquées
+
+Avant de redémarrer mongo1, 3 documents écrits sur le nouveau primary (mongo2) :
+
+```js
+db.pendant_panne.insertMany([{ n: 1, ... }, { n: 2, ... }, { n: 3, ... }])
+```
+
+Après `docker start mongo1`, en se connectant **directement à mongo1** :
+
+```bash
+docker exec mongo1 mongosh --quiet census --eval 'db.pendant_panne.countDocuments({})'
+```
+→ **3**
+
+Les trois documents sont présents. **Le mécanisme est l'oplog** (Partie 1).
+
+Au démarrage, mongo1 compare le `ts` de sa dernière opération appliquée avec l'oplog d'un membre à
+jour, et **rejoue toutes les entrées postérieures**. Il ne recopie pas la base : il rattrape le
+journal. C'est pour cela que les entrées doivent être **idempotentes** (Q10) — mongo1 rejoue
+potentiellement une fenêtre chevauchant ce qu'il avait déjà appliqué avant de mourir, et un `$inc`
+relatif fausserait le résultat (Q11).
+
+C'est aussi ce qui rend la **Q12 critique** : ce rattrapage n'est possible que si les opérations
+manquées **sont encore dans l'oplog**. Au-delà de 19 minutes d'absence sur ce set, mongo1 n'aurait pas
+pu procéder ainsi et aurait dû subir une resynchronisation initiale complète.
+
+### Q21 — panne brutale, la mesure centrale
+
+```bash
+docker kill mongo1
+```
+
+```
+docker kill a 15:52:21.264
+[   0.01s] 15:52:18.359  primary = mongo1:27017
+[   3.06s] 15:52:21.411  primary = AUCUN
+[  11.95s] 15:52:30.301  primary = mongo3:27017
+```
+
+| Scénario | Délai | Nœud élu |
+|---|---|---|
+| Arrêt propre (Q17) | **0,181 s** | mongo2 |
+| **Panne brutale** | **9,037 s** | **mongo3** |
+| **Rapport** | **≈ 50×** | |
+
+**La différence est d'un facteur 50.** Et la ligne du milieu est celle qui compte : pendant
+**8,9 secondes**, `primary = AUCUN`. Ce n'est pas un basculement, c'est un **trou de service** — le
+cluster n'accepte aucune écriture pendant ce temps.
+
+**Confrontation à `electionTimeoutMillis` = 10 000 ms : mon délai est *légèrement inférieur*** —
+9,037 s pour un timeout de 10 s, soit **963 ms de moins**.
+
+**Explication de l'écart.** Le compte à rebours ne démarre **pas** à l'instant de la mort du nœud,
+mais à son **dernier heartbeat réussi**. Avec `heartbeatIntervalMillis = 2000`, les secondaries
+interrogent mongo1 toutes les 2 secondes. Quand SIGKILL frappe, le dernier heartbeat réussi date donc
+d'un instant **aléatoire entre 0 et 2 secondes plus tôt** — en moyenne 1 seconde.
+
+Le nœud est donc déclaré mort environ `10 s − 1 s = 9 s` après sa mort réelle, et non 10 s. Mes
+963 ms d'écart tombent exactement dans cette fenêtre. L'élection elle-même est rapide (quelques
+centaines de millisecondes) et ne pèse presque rien.
+
+Autrement dit, le délai observé vaut :
+
+```
+electionTimeoutMillis − (temps écoulé depuis le dernier heartbeat) + durée de l'élection
+```
+
+et il varie donc, d'une panne à l'autre, **entre 8 et 10 secondes** sur cette configuration. Ce n'est
+pas une constante : c'est une fourchette. On le vérifie en R3 en abaissant le paramètre.
+
+### Q22 — synthèse
+
+Tableau complet dans **`failover.md`**.
+
+| Scénario | Commande | Délai | Nœud élu | Écritures perdues ? |
+|---|---|---|---|---|
+| Arrêt propre | `docker stop mongo1` | **0,18 s** | mongo2 | Non |
+| Panne brutale | `docker kill mongo1` | **9,04 s** | mongo3 | Non |
+| Retour du nœud | `docker start mongo1` | **11,55 s** | mongo1 | Non |
+
+**Ce que j'annonce à la DSI.** Le SLA de 99,9 % autorise 43 min/mois ; à 9,04 s par panne brutale, il
+faudrait **285 basculements dans le mois** pour l'épuiser — le failover automatique consomme 0,35 %
+du budget par incident, il n'est pas le risque. Un arrêt planifié (0,18 s) est invisible.
+
+Deux réserves que je ne tais pas : ces 9 s sont mesurées **vue du cluster**, l'application subit un
+trou plus long (Q31) ; et le retour du nœud coûte **11,55 s supplémentaires** à cause du `priority: 2`,
+soit une seconde interruption pour un seul incident.
+
+### Q23 — le quorum
+
+```bash
+docker start mongo1              # remise en marche des 3
+docker stop mongo2 mongo3        # on tue 2 nœuds sur 3
+docker exec mongo1 mongosh --quiet --eval 'print(db.hello().isWritablePrimary, rs.status().myState)'
+```
+
+**(a) Les deux relevés**
+
+| Instant | `isWritablePrimary` | `myState` | État |
+|---|---|---|---|
+| **Immédiat** | **`true`** | **1** | PRIMARY |
+| **+15 secondes** | **`false`** | **2** | **SECONDARY** |
+
+**Ce qui s'est passé entre les deux : mongo1 s'est rétrogradé tout seul.**
+
+Au moment de l'arrêt, mongo1 *croit* encore être primary — il n'a pas encore constaté la disparition
+de ses deux pairs. Il faut `electionTimeoutMillis` (10 s) sans pouvoir joindre une **majorité de
+votants** pour qu'il en tire la conséquence. Il n'attend alors aucune instruction : il **abdique de
+lui-même** et repasse SECONDARY.
+
+C'est le mécanisme **anti-split-brain**. Sans lui, une coupure réseau séparant le set en deux
+partitions laisserait un primary de chaque côté, chacun acceptant des écritures divergentes,
+irréconciliables au retour. La règle « un primary qui perd la majorité se rétrograde » garantit qu'il
+ne peut jamais y avoir **deux primaries simultanés**.
+
+Ces 10 secondes sont aussi la fenêtre pendant laquelle un client mal informé pourrait encore écrire
+sur un primary condamné — c'est précisément la situation que `w: "majority"` (Q24) neutralise.
+
+**(b) Le nœud survivant accepte-t-il encore des écritures ? Des lectures ?**
+
+| Opération | Résultat |
+|---|---|
+| Écriture | **refusée** — `codeName: NotWritablePrimary`, « not primary » |
+| Lecture | **acceptée** — 29 470 documents |
+
+Le cluster est donc en **lecture seule**. C'est le comportement voulu : les données sont toujours là
+et restent servies, mais plus aucune modification n'est acceptée puisque aucune ne pourrait être
+confirmée par une majorité. **Un Replica Set qui perd le quorum ne tombe pas — il se fige.**
+
+**(c) Pourquoi 3 nœuds tolèrent 1 panne et pas 2, et pourquoi 4 ne font pas mieux**
+
+La **majorité** d'un set de N membres votants vaut `⌊N/2⌋ + 1`. Un primary ne peut être élu, et ne
+peut se maintenir, que s'il est en contact avec au moins ce nombre de membres.
+
+| Membres | Majorité requise | Survivants avec 1 panne | Survivants avec 2 pannes | Pannes tolérées |
+|---|---|---|---|---|
+| **3** | **2** | 2 ✅ | 1 ❌ | **1** |
+| **4** | **3** | 3 ✅ | 2 ❌ | **1** |
+| 5 | 3 | 4 ✅ | 3 ✅ | **2** |
+
+Avec 3 membres, la majorité est 2 : une panne laisse 2 survivants, le quorum tient. **Deux pannes
+laissent 1 survivant, qui est minoritaire** — c'est exactement ce que j'ai observé, mongo1 se
+rétrogradant après 15 s.
+
+**Passer à 4 ne change rien**, parce que la majorité monte à 3 en même temps que l'effectif. Deux
+pannes laissent 2 survivants sur une majorité de 3 : toujours insuffisant. On paie une machine de
+plus pour la **même tolérance d'une panne**, tout en ajoutant un composant supplémentaire susceptible
+de tomber — la fiabilité globale **baisse**.
+
+C'est pourquoi les Replica Sets se dimensionnent en **nombres impairs** : seul le passage à 5
+(majorité 3) fait réellement progresser la tolérance, à 2 pannes. Vérifié expérimentalement en R1.
