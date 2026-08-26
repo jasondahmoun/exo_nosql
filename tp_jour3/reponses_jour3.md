@@ -437,3 +437,122 @@ nœud doit pouvoir tomber tout un week-end ») et on en déduit la taille. Ici, 
 
 soit **environ 195 fois** l'oplog actuel. C'est ce calcul, et non une valeur par défaut, qui doit
 fixer `--oplogSize`.
+
+## Partie 2
+
+### Q13 — lire sur un secondary
+
+```bash
+docker exec mongo2 mongosh --quiet census --eval 'db.zips.countDocuments({})'
+```
+→ **29470**
+
+**Oui, on obtient les données**, sans avoir rien eu à activer.
+
+`rs.secondaryOk()` est **déprécié depuis MongoDB 4.4**. Ce que `mongosh` positionne automatiquement
+aujourd'hui, c'est **`directConnection=true`** : quand on se connecte à un membre nommément, le shell
+ne cherche pas à découvrir le Replica Set ni à router vers le primary — il parle à *ce* nœud, et
+applique la read preference **`secondaryPreferred`**.
+
+L'ancienne commande n'est plus nécessaire parce que le besoin qu'elle servait a changé de camp :
+`secondaryOk()` était un **drapeau de connexion** qu'il fallait armer à la main pour lever le refus de
+lire sur un secondary. Il a été remplacé par le mécanisme de **read preference**, plus fin (`primary`,
+`secondaryPreferred`, `nearest`…) et surtout déclaratif — on décrit ce qu'on veut lire, pas une
+permission qu'on s'accorde. `mongosh` choisit le réglage adapté au contexte de connexion.
+
+### Q14 — écrire sur un secondary
+
+```bash
+docker exec mongo2 mongosh --quiet census --eval 'db.zips.insertOne({ test: 1 })'
+```
+
+```
+codeName : NotWritablePrimary
+code     : 10107
+message  : not primary
+```
+
+**Même erreur qu'en Q1**, pour une raison différente : en Q1 le nœud n'avait pas de configuration,
+ici il en a une et sait parfaitement qu'il est SECONDARY.
+
+**Pourquoi refuser l'écriture alors que la lecture est permise ?** Parce que ce sont deux risques
+opposés. Lire sur un secondary fait courir un seul risque : lire une donnée **légèrement en retard**
+(Q15) — dégradé, mais réparable et borné. Écrire sur un secondary créerait une donnée **qui n'existe
+nulle part ailleurs** : elle ne remonterait jamais vers le primary (la réplication est à sens unique,
+primary → secondaries) et serait écrasée à la prochaine synchronisation.
+
+C'est la règle absolue du modèle : **un seul primary, toutes les écritures y passent**. Elle est ce
+qui garantit un ordre total des opérations dans l'oplog, donc la convergence de tous les nœuds.
+
+### Q15 — retard de réplication
+
+```js
+rs.printSecondaryReplicationInfo()
+```
+
+Au repos :
+
+| Source | `replLag` |
+|---|---|
+| mongo2:27017 | 0 secs behind the primary |
+| mongo3:27017 | 0 secs behind the primary |
+
+Après insertion de 1 000 documents d'un coup (38 ms côté primary) :
+
+| Source | `replLag` |
+|---|---|
+| mongo2:27017 | **1 secs** behind the primary |
+| mongo3:27017 | **1 secs** behind the primary |
+
+**Le retard bouge — il passe de 0 à 1 seconde.** Puis il retombe à 0 quelques secondes plus tard.
+
+Test complémentaire, plus sévère (5 000 documents de ~200 octets, 57 ms côté primary), en lisant le
+secondary immédiatement après :
+
+| | |
+|---|---|
+| primary | 5000 documents |
+| secondary, lecture immédiate | **5000 documents** |
+| secondary, +3 s | 5000 documents |
+
+**Conclusion honnête sur ce montage : la réplication est bien asynchrone, mais le retard est ici
+sous le seuil de mesure.** Trois conteneurs sur la même machine n'ont ni latence réseau ni contention
+disque : le secondary rattrape en quelques millisecondes. `replLag` étant exprimé en **secondes
+entières**, tout retard inférieur à une seconde s'affiche `0` — la valeur `1 secs` relevée juste après
+le lot est la seule trace visible.
+
+Ce que cela ne remet pas en cause : le primary **n'attend pas** les secondaries pour acquitter une
+écriture en `w: 1`. C'est justement ce découplage qui rend possible la perte d'écriture de la Q24 et
+le rollback du bonus B4. Sur un vrai déploiement multi-datacenter, ce retard se compte en dizaines ou
+centaines de millisecondes, et devient parfaitement mesurable.
+
+### Q16 — Read Preference
+
+```js
+db.getMongo().setReadPref("primary");   db.zips.countDocuments({ state: "NY" })
+db.getMongo().setReadPref("secondary"); db.zips.countDocuments({ state: "NY" })
+```
+
+| Read preference | Résultat |
+|---|---|
+| `primary` | **1596** |
+| `secondary` | **1596** |
+| `secondaryPreferred` | **1596** |
+
+**Résultat identique** — attendu ici, puisque plus rien n'était en cours d'écriture et que le retard
+mesuré en Q15 est nul. L'égalité ne prouve donc pas que lire sur un secondary est toujours sûr : elle
+prouve qu'à cet instant les nœuds étaient convergés.
+
+**Cas où lire sur un secondary est acceptable** — un tableau de bord analytique : « population totale
+par État », un export nocturne, une page de statistiques. La donnée a des heures de pertinence ; qu'elle
+ait 200 ms de retard ne change strictement rien, et on décharge le primary d'une requête lourde.
+
+**Cas où c'est dangereux — le read-after-write.** Un utilisateur modifie son adresse, l'application
+confirme, puis recharge la page. Si la lecture part sur un secondary qui n'a pas encore reçu
+l'opération, il voit **son ancienne adresse** : il croit que l'enregistrement a échoué, et recommence.
+C'est le problème de la donnée **stale** — périmée. Toute lecture qui suit immédiatement une écriture
+du même utilisateur, tout contrôle de solde avant débit, tout test d'unicité avant insertion doit
+partir sur le **primary**.
+
+La règle : lire sur un secondary est acceptable quand la donnée est **consultée**, dangereux quand
+elle est **utilisée pour décider**.
