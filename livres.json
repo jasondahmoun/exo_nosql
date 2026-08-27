@@ -1,0 +1,272 @@
+[{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591667"
+	},
+	"titre": "Dune",
+	"auteur": "Frank Herbert",
+	"annee": 1965,
+	"genre": "SF",
+	"note": 9.2,
+	"tags": [
+		"classique",
+		"space-opera",
+		"ecologie"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591668"
+	},
+	"titre": "Neuromancien",
+	"auteur": "William Gibson",
+	"annee": 1984,
+	"genre": "SF",
+	"note": 8.4,
+	"tags": [
+		"cyberpunk",
+		"culte"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591669"
+	},
+	"titre": "La Horde du Contrevent",
+	"auteur": "Alain Damasio",
+	"annee": 2004,
+	"genre": "SF",
+	"note": 9,
+	"tags": [
+		"francais",
+		"culte",
+		"vent"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166a"
+	},
+	"titre": "Les Furtifs",
+	"auteur": "Alain Damasio",
+	"annee": 2019,
+	"genre": "SF",
+	"note": 7.8,
+	"tags": [
+		"francais",
+		"anticipation"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166b"
+	},
+	"titre": "Le Probleme a trois corps",
+	"auteur": "Liu Cixin",
+	"annee": 2008,
+	"genre": "SF",
+	"note": 8.7,
+	"tags": [
+		"hard-sf",
+		"chine",
+		"premier-contact"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166c"
+	},
+	"titre": "La Foret sombre",
+	"auteur": "Liu Cixin",
+	"annee": 2015,
+	"genre": "SF",
+	"note": 8.9,
+	"tags": [
+		"hard-sf",
+		"chine",
+		"suite"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166d"
+	},
+	"titre": "Project Hail Mary",
+	"auteur": "Andy Weir",
+	"annee": 2021,
+	"genre": "SF",
+	"note": 9.1,
+	"tags": [
+		"hard-sf",
+		"espace",
+		"humour"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166e"
+	},
+	"titre": "Seul sur Mars",
+	"auteur": "Andy Weir",
+	"annee": 2011,
+	"genre": "SF",
+	"note": 8.3,
+	"tags": [
+		"hard-sf",
+		"mars",
+		"survie"
+	],
+	"favori": true
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab3259166f"
+	},
+	"titre": "1984",
+	"auteur": "George Orwell",
+	"annee": 1949,
+	"genre": "Dystopie",
+	"note": 9.4,
+	"tags": [
+		"classique",
+		"politique",
+		"surveillance"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591670"
+	},
+	"titre": "Le Meilleur des mondes",
+	"auteur": "Aldous Huxley",
+	"annee": 1932,
+	"genre": "Dystopie",
+	"note": 8.6,
+	"tags": [
+		"classique",
+		"politique"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591671"
+	},
+	"titre": "La Servante ecarlate",
+	"auteur": "Margaret Atwood",
+	"annee": 1985,
+	"genre": "Dystopie",
+	"note": 8.5,
+	"tags": [
+		"feminisme",
+		"adaptation-serie"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591672"
+	},
+	"titre": "Le Nom du vent",
+	"auteur": "Patrick Rothfuss",
+	"annee": 2007,
+	"genre": "Fantasy",
+	"note": 8.8,
+	"tags": [
+		"magie",
+		"saga"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591673"
+	},
+	"titre": "La Voie des rois",
+	"auteur": "Brandon Sanderson",
+	"annee": 2010,
+	"genre": "Fantasy",
+	"note": 8.9,
+	"tags": [
+		"magie",
+		"saga",
+		"worldbuilding"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591674"
+	},
+	"titre": "Fils-des-brumes",
+	"auteur": "Brandon Sanderson",
+	"annee": 2006,
+	"genre": "Fantasy",
+	"note": 8.6,
+	"tags": [
+		"magie",
+		"heist"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591675"
+	},
+	"titre": "Le Seigneur des anneaux",
+	"auteur": "J.R.R. Tolkien",
+	"annee": 1954,
+	"genre": "Fantasy",
+	"note": 9.5,
+	"tags": [
+		"classique",
+		"epique",
+		"saga"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591676"
+	},
+	"titre": "Designing Data-Intensive Apps",
+	"auteur": "Martin Kleppmann",
+	"annee": 2017,
+	"genre": "Technique",
+	"note": 9.3,
+	"tags": [
+		"nosql",
+		"distribue",
+		"reference"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591677"
+	},
+	"titre": "MongoDB: The Definitive Guide",
+	"auteur": "Shannon Bradshaw",
+	"annee": 2019,
+	"genre": "Technique",
+	"note": 8.1,
+	"tags": [
+		"nosql",
+		"mongodb",
+		"reference"
+	]
+},
+{
+	"_id": {
+		"$oid": "6a8c047752af2aab32591678"
+	},
+	"titre": "Clean Code",
+	"auteur": "Robert C. Martin",
+	"annee": 2008,
+	"genre": "Technique",
+	"note": 7.6,
+	"tags": [
+		"craft",
+		"reference"
+	]
+}]
+
